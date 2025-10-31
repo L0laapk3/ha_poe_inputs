@@ -54,8 +54,8 @@ struct DigitalInput {
 		device.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32 ADS1015\",\"manufacturer\":\"Custom\"}");
 		device.addConfigVar("payload_avail", "online");
 		device.addConfigVar("payload_not_avail", "offline");
-		device.addConfigVar("stat_t", topic.c_str());
 		device.addConfigVar("avty_t", topic_availability.c_str());
+		device.addConfigVar("stat_t", topic.c_str());
 	}
 
 	DigitalInput(std::string topic, std::string name, uint8_t channel)
@@ -95,7 +95,7 @@ struct DigitalGPIOInput : public DigitalInput {
 		pinMode(pin, INPUT_PULLDOWN);
 	}
 
-	static constexpr unsigned long DEBOUNCE_DELAY_MS = 50;
+	static constexpr unsigned long DEBOUNCE_DELAY_MS = 100;
 	unsigned long lastChangeTime = 0;
 
 	void read() override {
@@ -158,8 +158,8 @@ struct AnalogAdsInput : DigitalAdsInput {
 AnalogAdsInput   dimmerInput {"dimmer",  "Living Dimmer",   0,  1};
 DigitalAdsInput  ain2Input   {"switch1", "Living Switch 1", 2};
 DigitalAdsInput  ain3Input   {"switch2", "Living Switch 2", 3};
-DigitalGPIOInput button1Input{"switch3", "Gang Switch 1",   34};
-DigitalGPIOInput button2Input{"switch4", "Gang Switch 2",   35};
+DigitalGPIOInput button1Input{"switch3", "Gang Switch 1",   14};
+DigitalGPIOInput button2Input{"switch4", "Gang Switch 2",   4};
 
 // Create status sensors to show device availability in HA
 HAMqttDevice statusSensor("Status", HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str());
@@ -247,7 +247,7 @@ void setup() {
 	ETH.begin();
 #endif
 
-	Wire.begin(SDA, SCL); // 13, 33
+	Wire.begin(32, 33);
 	Wire.setClock(10000);
 
 	mqtt.setServer(mqtt_server.c_str(), mqtt_port);
