@@ -1,0 +1,24 @@
+CompileFlags:
+  Add:
+    # Force C++20 mode for better standard library support
+    - -std=c++20
+  Remove:
+    # Remove ESP32-specific GCC flags that clangd doesn't understand
+    - -mlongcalls
+    - -mlong-calls
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -fno-jump-tables
+    - -freorder-blocks
+    - -Wno-frame-address
+    - -mtext-section-literals
+    # Remove problematic optimization flags
+    - -ffunction-sections
+    - -fdata-sections
+
+Diagnostics:
+  Suppress:
+    # Suppress false-positive errors in ESP32 framework headers
+    - typedef-redefinition
+  UnusedIncludes: None
+  MissingIncludes: None
