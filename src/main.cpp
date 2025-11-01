@@ -44,9 +44,9 @@ PubSubClient mqtt(ethClient);
 #endif
 
 
-
-struct DigitalInput {
-	DigitalInput(std::string _topic, std::string name, uint8_t pin, HAMqttDevice _device) :
+template<typename T, bool ADS = false>
+struct Input {
+	Input(std::string _topic, std::string name, uint8_t pin, HAMqttDevice _device) :
 		device(std::move(_device)), pin(pin) {
 		// Use device-specific state topic (not discovery namespace)
 		topic = mqtt_client_id + "/" + _topic;
@@ -54,19 +54,13 @@ struct DigitalInput {
 		device.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32 ADS1015\",\"manufacturer\":\"Custom\"}");
 		device.addConfigVar("payload_avail", "online");
 		device.addConfigVar("payload_not_avail", "offline");
-		device.addConfigVar("avty_t", topic_availability.c_str());
+		device.addConfigVar("avty_t", (ADS ? topic_ads_availability : topic_availability).c_str());
 		device.addConfigVar("stat_t", topic.c_str());
-	}
-
-	DigitalInput(std::string topic, std::string name, uint8_t channel)
-		: DigitalInput(topic, name, channel, HAMqttDevice(name.c_str(), HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())) {
-		device.addConfigVar("payload_on", "1");
-		device.addConfigVar("payload_off", "0");
 	}
 
 	HAMqttDevice device;
 	uint8_t pin;
-	std::optional<bool> boolState, lastBoolState;
+	std::optional<T> boolState, lastBoolState;
 
 	std::string topic;
 
@@ -89,7 +83,18 @@ struct DigitalInput {
 	}
 };
 
-struct DigitalGPIOInput : public DigitalInput {
+template<bool ADS = false>
+struct DigitalInput : public Input<bool, ADS> {
+	using Input<bool, ADS>::Input;
+
+	DigitalInput(std::string topic, std::string name, uint8_t channel)
+		: DigitalInput(topic, name, channel, HAMqttDevice(name.c_str(), HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())) {
+		this->device.addConfigVar("payload_on", "1");
+		this->device.addConfigVar("payload_off", "0");
+	}
+};
+
+struct DigitalGPIOInput : public DigitalInput<false> {
 	DigitalGPIOInput(std::string topic, std::string name, uint8_t pin)
 		: DigitalInput(topic, name, pin) {
 		pinMode(pin, INPUT_PULLDOWN);
@@ -108,16 +113,8 @@ struct DigitalGPIOInput : public DigitalInput {
 };
 
 
-struct DigitalAdsInput : public DigitalInput {
-	DigitalAdsInput(std::string topic, std::string name, uint8_t pin, HAMqttDevice _device)
-		: DigitalInput(topic, name, pin, std::move(_device)) {
-		device.addConfigVar("avty_t", topic_ads_availability.c_str());
-	}
-	DigitalAdsInput(std::string topic, std::string name, uint8_t pin)
-		: DigitalAdsInput(topic, name, pin, HAMqttDevice(name.c_str(), HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())) {
-		device.addConfigVar("payload_on", "1");
-		device.addConfigVar("payload_off", "0");
-	}
+struct DigitalAdsInput : public DigitalInput<true> {
+	using DigitalInput<true>::DigitalInput;
 
 	static constexpr float THRESHOLD_LOW = 3.3f * 0.25f;
 	static constexpr float THRESHOLD_HIGH = 3.3f * 0.75f;
@@ -128,25 +125,27 @@ struct DigitalAdsInput : public DigitalInput {
 	}
 };
 
-struct AnalogAdsInput : DigitalAdsInput {
-	uint8_t analogPin;
+struct AnalogAdsInput : Input<float, true> {
 	std::optional<float> floatState, lastFloatState;
 
-	AnalogAdsInput(std::string topic, std::string name, uint8_t gatePin, uint8_t analogPin)
-		: DigitalAdsInput(topic, name, gatePin, HAMqttDevice(name.c_str(), HAMqttDevice::SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())), analogPin(analogPin) {
+	AnalogAdsInput(std::string topic, std::string name, uint8_t pin)
+		: Input(topic, name, pin, HAMqttDevice(name.c_str(), HAMqttDevice::SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())) {
 		device.addConfigVar("unit_of_measurement", "%");
 		device.addConfigVar("state_class", "measurement");
 		device.addConfigVar("icon", "mdi:brightness-percent");
 	}
 
+	static constexpr float VOLTAGE = 3.3f;
+	static constexpr float CROP = 0.025 * VOLTAGE; // 2.5% crop on both ends
+	static constexpr float HYSTERESIS_PERCENT = 0.25;
+
 	void read() override {
-		DigitalAdsInput::read();
-		float analogVoltage = ads.computeVolts(ads.readADC_SingleEnded(analogPin));
-		floatState = boolState.value_or(false) ? (analogVoltage / 3.3f) * 100.0f : 0.0f;
+		float analogVoltage = ads.computeVolts(ads.readADC_SingleEnded(pin));
+		floatState = std::clamp((analogVoltage - CROP) / (3.3f - 2 * CROP), 0.0f, 1.0f) * 100.0f;
 	}
 
 	void publish() override {
-		if (!lastFloatState.has_value() || abs(floatState.value() - lastFloatState.value()) > 0.1f) {
+		if (!lastFloatState.has_value() || abs(floatState.value() - lastFloatState.value()) > HYSTERESIS_PERCENT) {
 			lastFloatState = floatState;
 			std::ostringstream oss;
 			oss << std::fixed << std::setprecision(1) << floatState.value();
@@ -155,11 +154,14 @@ struct AnalogAdsInput : DigitalAdsInput {
 	}
 };
 
-AnalogAdsInput   dimmerInput {"dimmer",  "Living Dimmer",   0,  1};
-DigitalAdsInput  ain2Input   {"switch1", "Living Switch 1", 2};
-DigitalAdsInput  ain3Input   {"switch2", "Living Switch 2", 3};
-DigitalGPIOInput button1Input{"switch3", "Gang Switch 1",   14};
-DigitalGPIOInput button2Input{"switch4", "Gang Switch 2",   4};
+
+
+DigitalAdsInput  ain0Input   ("dimmerSwitch", "Living Dimmer Switch", 0);
+AnalogAdsInput   dimmerInput ("dimmer",       "Living Dimmer",   1);
+DigitalAdsInput  ain2Input   ("switch1",      "Living Switch 1", 2);
+DigitalAdsInput  ain3Input   ("switch2",      "Living Switch 2", 3);
+DigitalGPIOInput button1Input("switch3",      "Gang Switch 1",   14);
+DigitalGPIOInput button2Input("switch4",      "Gang Switch 2",   4);
 
 // Create status sensors to show device availability in HA
 HAMqttDevice statusSensor("Status", HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str());
@@ -247,7 +249,7 @@ void setup() {
 	ETH.begin();
 #endif
 
-	Wire.begin(32, 33);
+	Wire.begin(33, 32);
 	Wire.setClock(10000);
 
 	mqtt.setServer(mqtt_server.c_str(), mqtt_port);
@@ -301,6 +303,7 @@ void loop() {
 
 		// Publish mqtt autodiscovery & availability as online
 		mqtt.publish(topic_ads_availability.c_str(), "offline", false);
+		ain0Input.publishDiscovery();
 		dimmerInput.publishDiscovery();
 		ain2Input.publishDiscovery();
 		ain3Input.publishDiscovery();
@@ -327,6 +330,7 @@ void loop() {
 	}
 
 	if (adsAvailable) {
+		ain0Input.update();
 		dimmerInput.update();
 		ain2Input.update();
 		ain3Input.update();
