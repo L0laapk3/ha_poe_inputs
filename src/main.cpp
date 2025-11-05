@@ -1,5 +1,4 @@
 // we have ESP32-POE-WROVER
-#include "esp32-hal-gpio.h"
 #include <cstdint>
 #define BOARD_HAS_PSRAM
 
