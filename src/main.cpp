@@ -1,9 +1,8 @@
 // we have ESP32-POE-WROVER
+#include <cstdint>
 #define BOARD_HAS_PSRAM
 
 #include "HardwareSerial.h"
-#include <Wire.h>
-#include <Adafruit_ADS1X15.h>
 #include <ETH.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -27,13 +26,15 @@ std::string mqtt_user = "schakelaars_living";
 std::string mqtt_password = "schakelaars_living:D";
 std::string mqtt_client_id = "schakelaars_living";
 std::string topic_availability = mqtt_client_id + "/availability";
-std::string topic_ads_availability = mqtt_client_id + "/ads_availability";
 
 std::string MQTT_HA_DISCOVERY_PREFIX = "homeassistant";
 
-
-
-Adafruit_ADS1015 ads;
+// Matrix scanning configuration
+// 2 rows (driver pins) x 3 columns (input pins) = 6 switches
+constexpr std::array<uint8_t, 2> MATRIX_DRIVER_PINS = {13, 15};  // Driver pins - outputs
+constexpr std::array<uint8_t, 3> MATRIX_INPUT_PINS = {14, 4, 32};  // Input pins - inputs with pulldown
+constexpr uint8_t ANALOG_PIN = 36;  // Analog input pin
+constexpr uint8_t ANALOG_BUTTON_PIN = 33; // pulldown
 
 #if USE_WIFI
 WiFiClient wifiClient;
@@ -44,17 +45,16 @@ PubSubClient mqtt(ethClient);
 #endif
 
 
-template<typename T, bool ADS = false>
+template<typename T>
 struct Input {
-	Input(std::string _topic, std::string name, uint8_t pin, HAMqttDevice _device) :
-		device(std::move(_device)), pin(pin) {
-		// Use device-specific state topic (not discovery namespace)
+	Input(std::string _topic, std::string name, uint8_t pin, HAMqttDevice::DeviceType type) :
+		device(name.c_str(), type, MQTT_HA_DISCOVERY_PREFIX.c_str()), pin(pin) {
 		topic = mqtt_client_id + "/" + _topic;
 
-		device.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32 ADS1015\",\"manufacturer\":\"Custom\"}");
+		device.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32\",\"manufacturer\":\"Custom\"}");
 		device.addConfigVar("payload_avail", "online");
 		device.addConfigVar("payload_not_avail", "offline");
-		device.addConfigVar("avty_t", (ADS ? topic_ads_availability : topic_availability).c_str());
+		device.addConfigVar("avty_t", topic_availability.c_str());
 		device.addConfigVar("stat_t", topic.c_str());
 	}
 
@@ -70,12 +70,7 @@ struct Input {
 
 	virtual void read() = 0;
 
-	virtual void publish() {
-		if (!lastBoolState.has_value() || boolState != lastBoolState) {
-			lastBoolState = boolState;
-			mqtt.publish(topic.c_str(), boolState.value() ? "1" : "0", true);
-		}
-	}
+	virtual void publish() = 0;
 
 	void update() {
 		read();
@@ -83,20 +78,11 @@ struct Input {
 	}
 };
 
-template<bool ADS = false>
-struct DigitalInput : public Input<bool, ADS> {
-	using Input<bool, ADS>::Input;
-
-	DigitalInput(std::string topic, std::string name, uint8_t channel)
-		: DigitalInput(topic, name, channel, HAMqttDevice(name.c_str(), HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())) {
+struct DigitalInput : public Input<bool> {
+	DigitalInput(std::string topic, std::string name, uint8_t pin)
+		: Input<bool>(topic, name, pin, HAMqttDevice::BINARY_SENSOR) {
 		this->device.addConfigVar("payload_on", "1");
 		this->device.addConfigVar("payload_off", "0");
-	}
-};
-
-struct DigitalGPIOInput : public DigitalInput<false> {
-	DigitalGPIOInput(std::string topic, std::string name, uint8_t pin)
-		: DigitalInput(topic, name, pin) {
 		pinMode(pin, INPUT_PULLDOWN);
 	}
 
@@ -110,38 +96,33 @@ struct DigitalGPIOInput : public DigitalInput<false> {
 				lastChangeTime = millis();
 		}
 	}
-};
 
-
-struct DigitalAdsInput : public DigitalInput<true> {
-	using DigitalInput<true>::DigitalInput;
-
-	static constexpr float THRESHOLD_LOW = 3.3f * 0.25f;
-	static constexpr float THRESHOLD_HIGH = 3.3f * 0.75f;
-
-	void read() override {
-		float voltage = ads.computeVolts(ads.readADC_SingleEnded(pin));
-		boolState = voltage > (lastBoolState.value_or(false) ? THRESHOLD_LOW : THRESHOLD_HIGH); // debouncing
+	void publish() override {
+		if (!lastBoolState.has_value() || boolState != lastBoolState) {
+			lastBoolState = boolState;
+			mqtt.publish(topic.c_str(), boolState.value() ? "1" : "0", true);
+		}
 	}
 };
 
-struct AnalogAdsInput : Input<float, true> {
+
+struct AnalogInput : Input<float> {
 	std::optional<float> floatState, lastFloatState;
 
-	AnalogAdsInput(std::string topic, std::string name, uint8_t pin)
-		: Input(topic, name, pin, HAMqttDevice(name.c_str(), HAMqttDevice::SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str())) {
+	AnalogInput(std::string topic, std::string name, uint8_t pin)
+		: Input(topic, name, pin, HAMqttDevice::SENSOR) {
 		device.addConfigVar("unit_of_measurement", "%");
 		device.addConfigVar("state_class", "measurement");
 		device.addConfigVar("icon", "mdi:brightness-percent");
+		pinMode(pin, INPUT);
 	}
 
-	static constexpr float VOLTAGE = 3.3f;
-	static constexpr float CROP = 0.025 * VOLTAGE; // 2.5% crop on both ends
+	static constexpr int ADC_MAX = 4095; // 12-bit ADC on ESP32
 	static constexpr float HYSTERESIS_PERCENT = 0.25;
 
 	void read() override {
-		float analogVoltage = ads.computeVolts(ads.readADC_SingleEnded(pin));
-		floatState = std::clamp((analogVoltage - CROP) / (3.3f - 2 * CROP), 0.0f, 1.0f) * 100.0f;
+		int analogValue = analogRead(pin);
+		floatState = (analogValue / float(ADC_MAX)) * 100.0f;
 	}
 
 	void publish() override {
@@ -154,18 +135,19 @@ struct AnalogAdsInput : Input<float, true> {
 	}
 };
 
+DigitalInput switch0Input("switch0", "Living Switch 0", MATRIX_DRIVER_PINS[0]);
+DigitalInput switch1Input("switch1", "Living Switch 1", MATRIX_DRIVER_PINS[1]);
+DigitalInput switch2Input("switch2", "Living Switch 2", MATRIX_DRIVER_PINS[2]);
+DigitalInput switch3Input("switch3", "Living Switch 3", MATRIX_DRIVER_PINS[0]);
+DigitalInput switch4Input("switch4", "Living Switch 4", MATRIX_DRIVER_PINS[1]);
+DigitalInput switch5Input("switch5", "Living Switch 5", MATRIX_DRIVER_PINS[2]);
 
+// Analog input
+AnalogInput dimmerInput("dimmer", "Living Dimmer", ANALOG_PIN);
+DigitalInput dimmerSwitchInput("dimmer_switch", "Living Dimmer Switch", MATRIX_DRIVER_PINS[0]);
 
-DigitalAdsInput  ain0Input   ("dimmerSwitch", "Living Dimmer Switch", 0);
-AnalogAdsInput   dimmerInput ("dimmer",       "Living Dimmer",   1);
-DigitalAdsInput  ain2Input   ("switch1",      "Living Switch 1", 2);
-DigitalAdsInput  ain3Input   ("switch2",      "Living Switch 2", 3);
-DigitalGPIOInput button1Input("switch3",      "Gang Switch 1",   14);
-DigitalGPIOInput button2Input("switch4",      "Gang Switch 2",   4);
-
-// Create status sensors to show device availability in HA
+// Create status sensor to show device availability in HA
 HAMqttDevice statusSensor("Status", HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str());
-HAMqttDevice adsStatusSensor("ADS1015 Status", HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str());
 
 #if !USE_WIFI
 static bool eth_connected = false;
@@ -249,29 +231,23 @@ void setup() {
 	ETH.begin();
 #endif
 
-	Wire.begin(33, 32);
-	Wire.setClock(10000);
+	for (auto pin : MATRIX_DRIVER_PINS) {
+		pinMode(pin, OUTPUT);
+		digitalWrite(pin, LOW);
+	}
+
 
 	mqtt.setServer(mqtt_server.c_str(), mqtt_port);
 	mqtt.setBufferSize(2048);
 	mqtt.setCallback([](char* topic, byte* payload, unsigned int length) {});
 
-	// Setup main status sensor (ESP32 connectivity) - no dependencies
-	statusSensor.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32 ADS1015\",\"manufacturer\":\"Custom\"}");
+	// Setup main status sensor (ESP32 connectivity)
+	statusSensor.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32\",\"manufacturer\":\"Custom\"}");
 	statusSensor.addConfigVar("payload_on", "online");
 	statusSensor.addConfigVar("payload_off", "offline");
 	statusSensor.addConfigVar("stat_t", topic_availability.c_str());
 	statusSensor.addConfigVar("device_class", "connectivity");
 	statusSensor.addConfigVar("entity_category", "diagnostic");
-
-	// Setup ADS1015 status sensor - depends on ESP32 being online
-	adsStatusSensor.addConfigVar("device", "{\"identifiers\":[\"schakelaars_living\"],\"name\":\"Schakelaars Living\",\"model\":\"ESP32 ADS1015\",\"manufacturer\":\"Custom\"}");
-	adsStatusSensor.addConfigVar("payload_on", "online");
-	adsStatusSensor.addConfigVar("payload_off", "offline");
-	adsStatusSensor.addConfigVar("stat_t", topic_ads_availability.c_str());
-	adsStatusSensor.addConfigVar("avty_t", topic_availability.c_str());  // ADS depends on ESP32
-	adsStatusSensor.addConfigVar("device_class", "connectivity");
-	adsStatusSensor.addConfigVar("entity_category", "diagnostic");
 }
 
 void loop() {
@@ -302,15 +278,16 @@ void loop() {
 		Serial.println("connected");
 
 		// Publish mqtt autodiscovery & availability as online
-		mqtt.publish(topic_ads_availability.c_str(), "offline", false);
-		ain0Input.publishDiscovery();
+		switch0Input.publishDiscovery();
+		switch1Input.publishDiscovery();
+		switch2Input.publishDiscovery();
+		switch3Input.publishDiscovery();
+		switch4Input.publishDiscovery();
+		switch5Input.publishDiscovery();
 		dimmerInput.publishDiscovery();
-		ain2Input.publishDiscovery();
-		ain3Input.publishDiscovery();
-		button1Input.publishDiscovery();
-		button2Input.publishDiscovery();
+		dimmerSwitchInput.publishDiscovery();
+
 		mqtt.publish(statusSensor.getConfigTopic().c_str(), statusSensor.getConfigPayload().c_str(), true);
-		mqtt.publish(adsStatusSensor.getConfigTopic().c_str(), adsStatusSensor.getConfigPayload().c_str(), true);
 		mqtt.publish(topic_availability.c_str(), "online", true);
 		Serial.println("Published MQTT discovery configs");
 	}
@@ -320,23 +297,22 @@ void loop() {
 	}
 
 
-	static bool adsAvailable = false;
-	if (!adsAvailable) {
-		adsAvailable = ads.begin(0x48, &Wire);
-		if (adsAvailable) {
-			mqtt.publish(topic_ads_availability.c_str(), "online", true);
-			Serial.println("ADS available!");
-		}
-	}
+	constexpr unsigned long SETTLING_TIME_MS = 10;
 
-	if (adsAvailable) {
-		ain0Input.update();
-		dimmerInput.update();
-		ain2Input.update();
-		ain3Input.update();
-	}
-	button1Input.update();
-	button2Input.update();
+	digitalWrite(MATRIX_DRIVER_PINS[0], HIGH);
+	delay(SETTLING_TIME_MS);
+	switch0Input.update();
+	switch1Input.update();
+	switch2Input.update();
+	digitalWrite(MATRIX_DRIVER_PINS[0], LOW);
 
-	delay(10);
+	digitalWrite(MATRIX_DRIVER_PINS[1], HIGH);
+	delay(SETTLING_TIME_MS);
+	switch3Input.update();
+	switch4Input.update();
+	switch5Input.update();
+	digitalWrite(MATRIX_DRIVER_PINS[0], LOW);
+
+	dimmerInput.update();
+	dimmerSwitchInput.update();
 }
