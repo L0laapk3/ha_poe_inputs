@@ -31,10 +31,10 @@ std::string MQTT_HA_DISCOVERY_PREFIX = "homeassistant";
 
 // Matrix scanning configuration
 // 2 rows (driver pins) x 3 columns (input pins) = 6 switches
-constexpr std::array<uint8_t, 2> MATRIX_DRIVER_PINS = {13, 15};  // Driver pins - outputs
-constexpr std::array<uint8_t, 3> MATRIX_INPUT_PINS = {14, 4, 32};  // Input pins - inputs with pulldown
+constexpr std::array<uint8_t, 2> MATRIX_DRIVER_PINS = {4, 14};  // Driver pins - outputs
+constexpr std::array<uint8_t, 3> MATRIX_INPUT_PINS = {13, 32, 15};  // Input pins - inputs with pullup
 constexpr uint8_t ANALOG_PIN = 36;  // Analog input pin
-constexpr uint8_t ANALOG_BUTTON_PIN = 33; // pulldown
+constexpr uint8_t ANALOG_BUTTON_PIN = 5; // pullup
 
 #if USE_WIFI
 WiFiClient wifiClient;
@@ -83,15 +83,15 @@ struct DigitalInput : public Input<bool> {
 		: Input<bool>(topic, name, pin, HAMqttDevice::BINARY_SENSOR) {
 		this->device.addConfigVar("payload_on", "1");
 		this->device.addConfigVar("payload_off", "0");
-		pinMode(pin, INPUT_PULLDOWN);
+		pinMode(pin, INPUT_PULLUP);
 	}
 
 	static constexpr unsigned long DEBOUNCE_DELAY_MS = 100;
 	unsigned long lastChangeTime = 0;
 
 	void read() override {
+		boolState = !digitalRead(pin);
 		if (millis() - lastChangeTime >= DEBOUNCE_DELAY_MS) {
-			boolState = digitalRead(pin);
 			if (boolState != lastBoolState)
 				lastChangeTime = millis();
 		}
@@ -135,16 +135,16 @@ struct AnalogInput : Input<float> {
 	}
 };
 
-DigitalInput switch0Input("switch0", "Living Switch 0", MATRIX_DRIVER_PINS[0]);
-DigitalInput switch1Input("switch1", "Living Switch 1", MATRIX_DRIVER_PINS[1]);
-DigitalInput switch2Input("switch2", "Living Switch 2", MATRIX_DRIVER_PINS[2]);
-DigitalInput switch3Input("switch3", "Living Switch 3", MATRIX_DRIVER_PINS[0]);
-DigitalInput switch4Input("switch4", "Living Switch 4", MATRIX_DRIVER_PINS[1]);
-DigitalInput switch5Input("switch5", "Living Switch 5", MATRIX_DRIVER_PINS[2]);
+DigitalInput switch0Input("switch0", "Living Switch 0", MATRIX_INPUT_PINS[0]);
+DigitalInput switch1Input("switch1", "Living Switch 1", MATRIX_INPUT_PINS[1]);
+DigitalInput switch2Input("switch2", "Living Switch 2", MATRIX_INPUT_PINS[2]);
+DigitalInput switch3Input("switch3", "Living Switch 3", MATRIX_INPUT_PINS[0]);
+DigitalInput switch4Input("switch4", "Living Switch 4", MATRIX_INPUT_PINS[1]);
+DigitalInput switch5Input("switch5", "Living Switch 5", MATRIX_INPUT_PINS[2]);
 
 // Analog input
 AnalogInput dimmerInput("dimmer", "Living Dimmer", ANALOG_PIN);
-DigitalInput dimmerSwitchInput("dimmer_switch", "Living Dimmer Switch", MATRIX_DRIVER_PINS[0]);
+DigitalInput dimmerSwitchInput("dimmer_switch", "Living Dimmer Switch", ANALOG_BUTTON_PIN);
 
 // Create status sensor to show device availability in HA
 HAMqttDevice statusSensor("Status", HAMqttDevice::BINARY_SENSOR, MQTT_HA_DISCOVERY_PREFIX.c_str());
@@ -232,8 +232,7 @@ void setup() {
 #endif
 
 	for (auto pin : MATRIX_DRIVER_PINS) {
-		pinMode(pin, OUTPUT);
-		digitalWrite(pin, LOW);
+		pinMode(pin, INPUT); // float
 	}
 
 
@@ -299,19 +298,21 @@ void loop() {
 
 	constexpr unsigned long SETTLING_TIME_MS = 10;
 
-	digitalWrite(MATRIX_DRIVER_PINS[0], HIGH);
+	pinMode(MATRIX_DRIVER_PINS[0], OUTPUT);
+	digitalWrite(MATRIX_DRIVER_PINS[0], LOW);
 	delay(SETTLING_TIME_MS);
 	switch0Input.update();
 	switch1Input.update();
 	switch2Input.update();
-	digitalWrite(MATRIX_DRIVER_PINS[0], LOW);
+	pinMode(MATRIX_DRIVER_PINS[0], INPUT);
 
-	digitalWrite(MATRIX_DRIVER_PINS[1], HIGH);
+	pinMode(MATRIX_DRIVER_PINS[1], OUTPUT);
+	digitalWrite(MATRIX_DRIVER_PINS[1], LOW);
 	delay(SETTLING_TIME_MS);
 	switch3Input.update();
 	switch4Input.update();
 	switch5Input.update();
-	digitalWrite(MATRIX_DRIVER_PINS[0], LOW);
+	pinMode(MATRIX_DRIVER_PINS[1], INPUT);
 
 	dimmerInput.update();
 	dimmerSwitchInput.update();
