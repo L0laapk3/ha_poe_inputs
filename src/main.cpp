@@ -1,4 +1,5 @@
 // we have ESP32-POE-WROVER
+#include "esp32-hal-gpio.h"
 #include <cstdint>
 #define BOARD_HAS_PSRAM
 
@@ -32,7 +33,7 @@ std::string MQTT_HA_DISCOVERY_PREFIX = "homeassistant";
 // Matrix scanning configuration
 // 2 rows (driver pins) x 3 columns (input pins) = 6 switches
 constexpr std::array<uint8_t, 2> MATRIX_DRIVER_PINS = {4, 14};  // Driver pins - outputs
-constexpr std::array<uint8_t, 3> MATRIX_INPUT_PINS = {13, 32, 15};  // Input pins - inputs with pullup
+constexpr std::array<uint8_t, 4> MATRIX_INPUT_PINS = {13, 32, 15, 3};  // Input pins - inputs with pullup
 constexpr uint8_t ANALOG_PIN = 36;  // Analog input pin
 constexpr uint8_t ANALOG_BUTTON_PIN = 5; // pullup
 
@@ -71,6 +72,13 @@ struct Input {
 	virtual void read() = 0;
 
 	virtual void publish() = 0;
+	void mqtt_publish(std::string_view payload) {
+		Serial.print("Topic ");
+		Serial.print(topic.c_str());
+		Serial.print("\tPayload ");
+		Serial.println(payload.data());
+		mqtt.publish(topic.c_str(), payload.data(), true);
+	}
 
 	void update() {
 		read();
@@ -100,7 +108,7 @@ struct DigitalInput : public Input<bool> {
 	void publish() override {
 		if (!lastBoolState.has_value() || boolState != lastBoolState) {
 			lastBoolState = boolState;
-			mqtt.publish(topic.c_str(), boolState.value() ? "1" : "0", true);
+			mqtt_publish(boolState.value() ? "1" : "0");
 		}
 	}
 };
@@ -130,7 +138,7 @@ struct AnalogInput : Input<float> {
 			lastFloatState = floatState;
 			std::ostringstream oss;
 			oss << std::fixed << std::setprecision(1) << floatState.value();
-			mqtt.publish(topic.c_str(), oss.str().c_str(), true);
+			mqtt_publish(oss.str());
 		}
 	}
 };
@@ -138,9 +146,11 @@ struct AnalogInput : Input<float> {
 DigitalInput switch0Input("switch0", "Living Switch 0", MATRIX_INPUT_PINS[0]);
 DigitalInput switch1Input("switch1", "Living Switch 1", MATRIX_INPUT_PINS[1]);
 DigitalInput switch2Input("switch2", "Living Switch 2", MATRIX_INPUT_PINS[2]);
-DigitalInput switch3Input("switch3", "Living Switch 3", MATRIX_INPUT_PINS[0]);
-DigitalInput switch4Input("switch4", "Living Switch 4", MATRIX_INPUT_PINS[1]);
-DigitalInput switch5Input("switch5", "Living Switch 5", MATRIX_INPUT_PINS[2]);
+DigitalInput switch3Input("switch3", "Living Switch 3", MATRIX_INPUT_PINS[3]);
+DigitalInput switch4Input("switch4", "Living Switch 4", MATRIX_INPUT_PINS[0]);
+DigitalInput switch5Input("switch5", "Living Switch 5", MATRIX_INPUT_PINS[1]);
+DigitalInput switch6Input("switch6", "Living Switch 6", MATRIX_INPUT_PINS[2]);
+DigitalInput switch7Input("switch7", "Living Switch 7", MATRIX_INPUT_PINS[3]);
 
 // Analog input
 AnalogInput dimmerInput("dimmer", "Living Dimmer", ANALOG_PIN);
@@ -283,6 +293,8 @@ void loop() {
 		switch3Input.publishDiscovery();
 		switch4Input.publishDiscovery();
 		switch5Input.publishDiscovery();
+		switch6Input.publishDiscovery();
+		switch7Input.publishDiscovery();
 		dimmerInput.publishDiscovery();
 		dimmerSwitchInput.publishDiscovery();
 
@@ -304,14 +316,16 @@ void loop() {
 	switch0Input.update();
 	switch1Input.update();
 	switch2Input.update();
+	switch3Input.update();
 	pinMode(MATRIX_DRIVER_PINS[0], INPUT);
 
 	pinMode(MATRIX_DRIVER_PINS[1], OUTPUT);
 	digitalWrite(MATRIX_DRIVER_PINS[1], LOW);
 	delay(SETTLING_TIME_MS);
-	switch3Input.update();
 	switch4Input.update();
 	switch5Input.update();
+	switch6Input.update();
+	switch7Input.update();
 	pinMode(MATRIX_DRIVER_PINS[1], INPUT);
 
 	dimmerInput.update();
